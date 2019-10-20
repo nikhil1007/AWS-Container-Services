@@ -1,5 +1,5 @@
 # AWS-Container-Services
-Fargate, ECS, EKS
+Fargate, Cloudformation
 
 The Cloudformation Template attached does the following :
 
