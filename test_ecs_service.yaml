@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploying sample application and deploying it to FARGATE
+
+# user input parameters
+Parameters:
+  AppName:
+    Type: String
+    Description: Name of app requiring ELB exposure
+    Default: sample-fargate-app
+  AppContainerPort:
+    Type: Number
+    Description: Container port of app requiring ELB exposure
+    Default: '80'
+  ServiceName:
+    Type: String
+  LoadBalancerName:
+    Type: String
+  HealthCheckGracePeriodSeconds:
+    Type: String
+
+# Defining resources to provision
+
+Resources:
+
+# document : https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ecs-cluster.html
+  cluster:
+    Type: 'AWS::ECS::Cluster'
+
+# document : https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ecs-taskdefinition.html
+  taskdefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      ContainerDefinitions:
+        - Command:
+            - >-
+              /bin/sh -c "echo '<html> <head> <title>Amazon ECS Sample App</title>
+              <style>body {margin-top: 40px; background-color: #333;} </style>
+              </head><body> <div style=color:white;text-align:center> <h1>Amazon ECS
+              Sample App</h1> <h2>Congratulations!</h2> <p>Your application is now
+              running on a container in Amazon ECS.</p> </div></body></html>' >
+              /usr/local/apache2/htdocs/index.html && httpd-foreground"
+          EntryPoint:
+            - sh
+            - '-c'
+          Essential: true
+          Image: 'httpd:2.4'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/fargate-task-definition
+              awslogs-region: us-east-1
+              awslogs-stream-prefix: ecs
+          Name: sample-fargate-app
+          PortMappings:
+            - ContainerPort: !Ref AppContainerPort
+              HostPort: !Ref AppContainerPort
+              Protocol: tcp
+      Cpu: '256'
+      ExecutionRoleArn: 'arn:aws:iam::804384505550:role/ecsTaskExecutionRole'
+      Family: fargate-task-definition
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+
+# document : https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ecs-service.html
+  service:
+    DependsOn : ["ListenerHTTP"]
+    Type: 'AWS::ECS::Service'
+    Properties:
+      LaunchType : FARGATE
+      Cluster: !Ref cluster
+      NetworkConfiguration :
+        AwsvpcConfiguration:
+           AssignPublicIp: ENABLED
+           Subnets:
+             - Ref: Subnet1
+             - Ref: Subnet2
+           SecurityGroups:
+             - Ref: InstanceSecurityGroup
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      DesiredCount: 1
+      HealthCheckGracePeriodSeconds: !Ref HealthCheckGracePeriodSeconds
+      LoadBalancers:
+        - ContainerName: !Ref AppName
+          ContainerPort: !Ref AppContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      TaskDefinition: !Ref taskdefinition
+      ServiceName: !Ref ServiceName
+
+# Creating Application Load Balancer, Fargate does not support Classic Load Balancer : https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-loadbalancer.html
+  elb:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Type: application
+      Name: !Ref LoadBalancerName
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref InstanceSecurityGroup
+      Subnets:
+        - !Ref Subnet1
+        - !Ref Subnet2
+    DependsOn: GatewayAttachment
+
+# Target group for the Application Load Balancer
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 120
+      # will look for a 200 status code by default unless specified otherwise
+      HealthCheckPath: '/'
+      Matcher:
+        HttpCode: 200,302,401
+      HealthCheckTimeoutSeconds: 60
+      UnhealthyThresholdCount: 10
+      HealthyThresholdCount: 2
+      Name: testTG
+      Port: !Ref AppContainerPort
+      Protocol: HTTP
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: 60   # default is 300
+      TargetType: ip
+      VpcId: !Ref VPC
+
+# Listener on container port  for the load balancer
+  ListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref elb
+      Port: !Ref AppContainerPort
+      Protocol: HTTP
+
+# ------------------ Network configurations for the FARGATE SERVICE ------------------------
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: 10.0.0.0/24
+
+  Subnet1:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: us-east-2a
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/25
+
+  Subnet2:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      AvailabilityZone: us-east-2b
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.128/25
+
+  myRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId:
+        Ref: VPC
+
+  myRoute:
+    Type: AWS::EC2::Route
+    Properties:
+       RouteTableId:
+         Ref: myRouteTable
+       DestinationCidrBlock: 0.0.0.0/0
+       GatewayId:
+         Ref: InternetGateway
+
+  mySubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: Subnet1
+      RouteTableId:
+        Ref: myRouteTable
+
+  mySubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:
+        Ref: Subnet2
+      RouteTableId:
+        Ref: myRouteTable
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Allow http to client host
+        VpcId:
+           Ref: VPC
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+
+  GatewayAttachment:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+# -------------------- END of Network Network Configuration ---------------------------
