@@ -213,3 +213,6 @@ Resources:
       InternetGatewayId: !Ref InternetGateway
       VpcId: !Ref VPC
 # -------------------- END of Network Network Configuration ---------------------------
+Outputs:
+    DNSname:
+      Value: !GetAtt elb.DNSName
